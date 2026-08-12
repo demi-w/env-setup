@@ -48,7 +48,7 @@ esac
 APPS_DEV=(brew nerd_font ripgrep ghostty fish starship git_base gh zed github_mcp pi chrome mac_settings)
 APPS_WORK=(slack datadog_mcp git_work)
 APPS_PERSONAL=(spotify git_personal)
-APPS_REMOTE=(brew ripgrep fish starship git_base gh pi git_work git_personal)
+APPS_REMOTE=(brew ripgrep fish starship git_base gh pi git_personal)
 
 # All known apps. Order matters: dependencies first.
 ALL_APPS=(
@@ -182,20 +182,23 @@ run_step() {
   fi
 }
 
+# Run brew non-interactively: skip auto-update/cleanup and auto-confirm the
+# dependency-list prompt (brew reads stdin for the "Press RETURN" confirmation).
 brew_install() {
   local pkg="$1" cask_flag="${2:-}"
+  local brew_cmd=(env HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1 HOMEBREW_NO_ENV_HINTS=1 NONINTERACTIVE=1 brew)
   if [ "$cask_flag" = "--cask" ]; then
     if brew list --cask --versions "$pkg" >/dev/null 2>&1; then
       skip "$pkg (cask) already installed"
       return 0
     fi
-    brew install --cask "$pkg"
+    yes '' | "${brew_cmd[@]}" install --cask "$pkg"
   else
     if brew list --versions "$pkg" >/dev/null 2>&1; then
       skip "$pkg already installed"
       return 0
     fi
-    brew install "$pkg"
+    yes '' | "${brew_cmd[@]}" install "$pkg"
   fi
 }
 
@@ -824,6 +827,13 @@ confirm_and_run() {
   fi
 
   log "Logging to $LOG_FILE"
+
+  # Cache sudo credentials once so later steps (Homebrew install, /etc/shells)
+  # don't each re-prompt for a password.
+  if command -v sudo >/dev/null 2>&1; then
+    log "Validating sudo access (one-time password prompt)…"
+    sudo -v || warn "sudo unavailable — some steps may fail"
+  fi
 
   for app in "${SELECTED_APPS[@]+"${SELECTED_APPS[@]}"}"; do
     if declare -f "install_$app" >/dev/null; then
