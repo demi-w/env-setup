@@ -356,20 +356,22 @@ FISH
     fi
     # Show the device name where the preset shows $username — devices change
     # more often than users.
-    /usr/bin/sed -i '' 's/^\$username\\$/$hostname\\/' "$cfg"
+    # NOTE: no `-i` flag — BSD sed (macOS) and GNU sed (Linux) parse `-i ''`
+    # differently, so we write to a temp file and move it into place instead.
+    /usr/bin/sed 's/^\$username\\$/$hostname\\/' "$cfg" > "$cfg.tmp" && mv "$cfg.tmp" "$cfg"
     # Keep the [os] icon flush against the leading orange arrow; the [hostname]
     # module that follows provides the spacing (its format has a leading space).
-    /usr/bin/sed -i '' 's|^style = "bg:color_orange fg:color_fg0"$|&\
-format = '"'"'[$symbol]($style)'"'"'|' "$cfg"
+    /usr/bin/sed 's|^style = "bg:color_orange fg:color_fg0"$|&\
+format = '"'"'[$symbol]($style)'"'"'|' "$cfg" > "$cfg.tmp" && mv "$cfg.tmp" "$cfg"
     # Replace the now-unused [username] block with an always-on [hostname] block,
     # styled like the username block it replaces. Runs after the [os] padding sed
     # above so its `style = ...` line isn't mistaken for the [os] one.
-    /usr/bin/sed -i '' '/^\[username\]$/,/format = .*\$user.*$/c\
+    /usr/bin/sed '/^\[username\]$/,/format = .*\$user.*$/c\
 [hostname]\
 ssh_only = false\
 style = "bg:color_orange fg:color_fg0"\
 format = '"'"'[ $hostname ]($style)'"'"'
-' "$cfg"
+' "$cfg" > "$cfg.tmp" && mv "$cfg.tmp" "$cfg"
   else
     skip "starship.toml already exists — leaving as-is"
   fi
