@@ -17,6 +17,15 @@
 set -u
 set -o pipefail
 
+# This script requires bash (arrays, declare -f, etc.). If it was invoked
+# through a POSIX sh that can still parse it (e.g. macOS /bin/sh, which is
+# bash in POSIX mode), re-exec under bash. NOTE: dash — Linux's /bin/sh —
+# fails at parse time before this guard runs, so the documented invocation
+# must be `bash <(curl ...)`, never `sh <(curl ...)`.
+if [ -z "${BASH_VERSION:-}" ]; then
+  exec bash "$0" "$@"
+fi
+
 # ---------------------------------------------------------------------------
 # Globals
 # ---------------------------------------------------------------------------
@@ -28,8 +37,15 @@ SUCCEEDED_STEPS=()
 SKIPPED_STEPS=()
 SELECTED_APPS=()
 
+# Platform detection — the installer runs on macOS and Linux.
+case "$(uname -s)" in
+  Darwin) PLATFORM=macos ;;
+  Linux)  PLATFORM=linux ;;
+  *)      PLATFORM=other ;;
+esac
+
 # Profile membership. Edit here to re-categorize an app.
-APPS_DEV=(brew nerd_font ripgrep ghostty fish starship git_base gh zed github_mcp claude_code chrome mac_settings)
+APPS_DEV=(brew nerd_font ripgrep ghostty fish starship git_base gh zed github_mcp pi chrome mac_settings)
 APPS_WORK=(slack datadog_mcp git_work)
 APPS_PERSONAL=(spotify git_personal)
 
@@ -45,7 +61,7 @@ ALL_APPS=(
   git_work
   git_personal
   gh
-  claude_code
+  pi
   zed
   github_mcp
   datadog_mcp
@@ -69,6 +85,50 @@ err()   { printf '\033[1;31m[x]\033[0m %s\n' "$*" | tee -a "$LOG_FILE" >&2; }
 skip()  { printf '\033[1;90m[-]\033[0m %s\n' "$*" | tee -a "$LOG_FILE"; }
 
 has_cmd() { command -v "$1" >/dev/null 2>&1; }
+
+# Locate Homebrew's binary across macOS + Linux install prefixes.
+brew_bin_path() {
+  if [ -x /opt/homebrew/bin/brew ]; then
+    printf '%s\n' /opt/homebrew/bin/brew
+  elif [ -x /usr/local/bin/brew ]; then
+    printf '%s\n' /usr/local/bin/brew
+  elif [ -x /home/linuxbrew/.linuxbrew/bin/brew ]; then
+    printf '%s\n' /home/linuxbrew/.linuxbrew/bin/brew
+  elif [ -x "$HOME/.linuxbrew/bin/brew" ]; then
+    printf '%s\n' "$HOME/.linuxbrew/bin/brew"
+  elif command -v brew >/dev/null 2>&1; then
+    command -v brew
+  else
+    printf '%s\n' ""
+  fi
+}
+
+# Locate the fish binary across macOS + Linux install prefixes.
+fish_bin_path() {
+  if [ -x /opt/homebrew/bin/fish ]; then
+    printf '%s\n' /opt/homebrew/bin/fish
+  elif [ -x /usr/local/bin/fish ]; then
+    printf '%s\n' /usr/local/bin/fish
+  elif [ -x /home/linuxbrew/.linuxbrew/bin/fish ]; then
+    printf '%s\n' /home/linuxbrew/.linuxbrew/bin/fish
+  elif [ -x "$HOME/.linuxbrew/bin/fish" ]; then
+    printf '%s\n' "$HOME/.linuxbrew/bin/fish"
+  elif command -v fish >/dev/null 2>&1; then
+    command -v fish
+  else
+    printf '%s\n' ""
+  fi
+}
+
+# Cross-platform "open this URL / file in the default handler".
+open_browser() {
+  local target="$1"
+  if [ "$PLATFORM" = "macos" ]; then
+    open "$target" 2>/dev/null
+  else
+    xdg-open "$target" >/dev/null 2>&1
+  fi
+}
 
 confirm() {
   local prompt="$1"
@@ -101,11 +161,11 @@ prompt_value() {
 }
 
 open_url() {
-  # Prompt y/n, then open URL in the user's default browser on macOS.
+  # Prompt y/n, then open URL in the user's default browser.
   # Respects ASSUME_YES via confirm() so unattended runs still open browsers.
   local url="$1"
   if confirm "Open $url in your browser?"; then
-    open "$url" 2>/dev/null || warn "Could not open $url"
+    open_browser "$url" || warn "Could not open $url"
   fi
 }
 
@@ -169,17 +229,19 @@ install_brew() {
   NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" || return 1
 
   local brew_bin
-  if [ -x /opt/homebrew/bin/brew ]; then
-    brew_bin=/opt/homebrew/bin/brew
-  elif [ -x /usr/local/bin/brew ]; then
-    brew_bin=/usr/local/bin/brew
-  else
+  brew_bin=$(brew_bin_path)
+  if [ -z "$brew_bin" ]; then
     err "Could not locate brew binary after install"
     return 1
   fi
   eval "$("$brew_bin" shellenv)"
-  append_if_missing "$HOME/.zprofile" "eval \"\$($brew_bin shellenv)\""
-  # Fish doesn't read .zprofile — wire shellenv into fish config too.
+  # macOS shells read .zprofile; Linux shells read .bashrc.
+  if [ "$PLATFORM" = "macos" ]; then
+    append_if_missing "$HOME/.zprofile" "eval \"\$($brew_bin shellenv)\""
+  else
+    append_if_missing "$HOME/.bashrc" "eval \"\$($brew_bin shellenv)\""
+  fi
+  # Fish doesn't read the above — wire shellenv into fish config too.
   local fish_cfg="$HOME/.config/fish/config.fish"
   mkdir -p "$(dirname "$fish_cfg")"
   append_if_missing "$fish_cfg" "$brew_bin shellenv fish | source"
@@ -206,11 +268,8 @@ install_fish() {
   brew_install fish || return 1
 
   local fish_bin
-  if [ -x /opt/homebrew/bin/fish ]; then
-    fish_bin=/opt/homebrew/bin/fish
-  elif [ -x /usr/local/bin/fish ]; then
-    fish_bin=/usr/local/bin/fish
-  else
+  fish_bin=$(fish_bin_path)
+  if [ -z "$fish_bin" ]; then
     err "Could not locate fish binary after install"
     return 1
   fi
@@ -246,7 +305,12 @@ install_starship() {
   has_cmd brew || { err "brew required"; return 1; }
   brew_install starship || return 1
 
-  append_if_missing "$HOME/.zshrc" 'eval "$(starship init zsh)"'
+  # macOS defaults to zsh; Linux defaults to bash. fish is handled below.
+  if [ "$PLATFORM" = "macos" ]; then
+    append_if_missing "$HOME/.zshrc" 'eval "$(starship init zsh)"'
+  else
+    append_if_missing "$HOME/.bashrc" 'eval "$(starship init bash)"'
+  fi
 
   local fish_cfg="$HOME/.config/fish/config.fish"
   if has_cmd fish; then
@@ -360,17 +424,18 @@ install_gh() {
   fi
 }
 
-install_claude_code() {
-  if has_cmd claude; then
-    ok "Claude Code CLI already installed"
+install_pi() {
+  if has_cmd pi; then
+    ok "Pi (coding agent) CLI already installed"
     return 0
   fi
-  if curl -fsSL https://claude.ai/install.sh | bash; then
-    ok "Claude Code installed via official script"
-  elif has_cmd npm; then
-    npm install -g @anthropic-ai/claude-code || return 1
+  if has_cmd npm; then
+    npm install -g @earendil-works/pi-coding-agent || return 1
+    ok "Pi installed via npm"
+  elif curl -fsSL https://pi.dev/install.sh | sh; then
+    ok "Pi installed via official script"
   else
-    err "Need either curl or npm to install Claude Code"
+    err "Need either npm or curl to install Pi"
     return 1
   fi
 }
@@ -420,13 +485,16 @@ install_zed() {
   fi
 
   # Minimal seed to silence the welcome flow until you wire up dotfiles.
-  cat > "$zed_cfg/settings.json" <<'JSON'
+  local fish_program
+  fish_program=$(fish_bin_path)
+  [ -n "$fish_program" ] || fish_program="/opt/homebrew/bin/fish"
+  cat > "$zed_cfg/settings.json" <<JSON
 {
   "telemetry": { "diagnostics": false, "metrics": false },
   "buffer_font_family": "FiraCode Nerd Font",
   "terminal": {
     "font_family": "FiraCode Nerd Font",
-    "shell": { "program": "/opt/homebrew/bin/fish" }
+    "shell": { "program": "$fish_program" }
   }
 }
 JSON
@@ -496,15 +564,25 @@ EOF
   log "Add this block inside (or create) the \"context_servers\" object in $zed_cfg:"
   printf '%s\n' "$block"
   log "Opening settings.json in Zed…"
-  open -a "Zed" "$zed_cfg" 2>/dev/null || open "$zed_cfg" 2>/dev/null || true
+  if [ "$PLATFORM" = "macos" ]; then
+    open -a "Zed" "$zed_cfg" 2>/dev/null || open "$zed_cfg" 2>/dev/null || true
+  else
+    log "Edit $zed_cfg manually (or run: zed $zed_cfg)"
+    command -v zed >/dev/null 2>&1 && zed "$zed_cfg" >/dev/null 2>&1 || true
+  fi
   ok "GitHub MCP block printed — paste into settings.json and save"
 }
 
 install_chrome() {
   has_cmd brew || { err "brew required"; return 1; }
   brew_install google-chrome --cask || return 1
-  if confirm "Make Chrome the default browser? (will prompt in System Settings)"; then
-    open -a "Google Chrome" --args --make-default-browser || true
+  if confirm "Make Chrome the default browser?"; then
+    if [ "$PLATFORM" = "macos" ]; then
+      open -a "Google Chrome" --args --make-default-browser || true
+    else
+      xdg-settings set default-web-browser google-chrome.desktop 2>/dev/null \
+        || warn "Could not set default browser — set it in your desktop settings"
+    fi
   fi
   log "Open Chrome and sign in to sync extensions/settings"
 }
@@ -513,7 +591,7 @@ install_slack() {
   has_cmd brew || { err "brew required"; return 1; }
   brew_install slack --cask || return 1
   log "Opening the Datadog Slack workspace ($DD_SLACK_TEAM_DOMAIN.slack.com) — sign in with SSO"
-  open "https://${DD_SLACK_TEAM_DOMAIN}.slack.com" || true
+  open_browser "https://${DD_SLACK_TEAM_DOMAIN}.slack.com" || true
 }
 
 install_spotify() {
@@ -523,6 +601,10 @@ install_spotify() {
 }
 
 install_mac_settings() {
+  if [ "$PLATFORM" != "macos" ]; then
+    skip "macOS system preferences are not applicable on $PLATFORM"
+    return 0
+  fi
   log "Applying macOS preferences…"
 
   defaults write NSGlobalDomain AppleInterfaceStyle -string "Dark" 2>/dev/null \
@@ -641,13 +723,13 @@ pick_profile() {
     clear
     cat <<'EOF'
 ╔════════════════════════════╗
-║   macOS Dev Setup          ║
+║   Dev Setup (macOS/Linux)  ║
 ╚════════════════════════════╝
 
 Pick a starting profile:
 
   1) dev       brew, fonts, ghostty, fish, starship, git, gh, zed,
-               github MCP (read-only), claude code, chrome, mac settings
+               github MCP (read-only), pi, chrome, mac settings
   2) work      dev + Slack (Datadog), Datadog MCP, work git identity
   3) personal  dev + Spotify, personal git identity
   4) all       everything
@@ -757,8 +839,8 @@ main() {
       ;;
   esac
 
-  if [ "$(uname -s)" != "Darwin" ]; then
-    err "This installer targets macOS only (uname=$(uname -s))"
+  if [ "$PLATFORM" = "other" ]; then
+    err "This installer supports macOS and Linux only (uname=$(uname -s))"
     exit 1
   fi
 
