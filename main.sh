@@ -5,7 +5,7 @@
 #   ./main.sh
 #
 # Walks you through:
-#   1) Pick a starting profile (dev / work / personal / all / custom)
+#   1) Pick a starting profile (dev / work / personal / remote / all / custom)
 #   2) Optionally toggle individual apps from that selection
 #   3) Choose whether to auto-confirm internal prompts
 #   4) Runs each installer in order, isolating failures
@@ -48,6 +48,7 @@ esac
 APPS_DEV=(brew nerd_font ripgrep ghostty fish starship git_base gh zed github_mcp pi chrome mac_settings)
 APPS_WORK=(slack datadog_mcp git_work)
 APPS_PERSONAL=(spotify git_personal)
+APPS_REMOTE=(brew ripgrep fish starship git_base gh pi git_work git_personal)
 
 # All known apps. Order matters: dependencies first.
 ALL_APPS=(
@@ -721,6 +722,9 @@ seed_from_profile() {
     personal)
       for app in "${APPS_DEV[@]}" "${APPS_PERSONAL[@]}"; do SELECTED_APPS+=("$app"); done
       ;;
+    remote)
+      SELECTED_APPS=("${APPS_REMOTE[@]}")
+      ;;
     all)
       SELECTED_APPS=("${ALL_APPS[@]}")
       ;;
@@ -745,8 +749,9 @@ Pick a starting profile:
                github MCP (read-only), pi, chrome, mac settings
   2) work      dev + Slack (Datadog), Datadog MCP, work git identity
   3) personal  dev + Spotify, personal git identity
-  4) all       everything
-  5) custom    start empty and pick individual apps
+  4) remote    headless SSH box: brew, fish, starship, git, gh, pi, git identity
+  5) all       everything
+  6) custom    start empty and pick individual apps
 
   q) quit
 
@@ -758,8 +763,9 @@ EOF
       1) seed_from_profile dev;      return 0 ;;
       2) seed_from_profile work;     return 0 ;;
       3) seed_from_profile personal; return 0 ;;
-      4) seed_from_profile all;      return 0 ;;
-      5) seed_from_profile custom;   return 0 ;;
+      4) seed_from_profile remote;   return 0 ;;
+      5) seed_from_profile all;      return 0 ;;
+      6) seed_from_profile custom;   return 0 ;;
       q|Q) exit 0 ;;
       *) ;;
     esac
