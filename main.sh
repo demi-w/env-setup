@@ -349,16 +349,27 @@ FISH
     starship preset gruvbox-rainbow -o "$cfg" || warn "Could not write starship preset"
     # Disable starship's pre-prompt newline; fish wrapper below re-adds it for
     # every prompt except the first, so the very first prompt has no blank gap.
+    # Insert at the TOP (root level): appending at the end would land inside the
+    # final [character] section and trigger an "Unknown key 'add_newline'" warning.
     if ! grep -q '^add_newline' "$cfg" 2>/dev/null; then
-      printf '\nadd_newline = false\n' >> "$cfg"
+      printf 'add_newline = false\n\n' | cat - "$cfg" > "$cfg.tmp" && mv "$cfg.tmp" "$cfg"
     fi
-    # Drop $username from the prompt format — the preset shows it, we don't want it.
-    /usr/bin/sed -i '' '/^\$username\\$/d' "$cfg"
-    # Pad the [os] icon so it sits flush against the leading orange arrow with a
-    # single trailing space — replaces the right-side spacing that $username's
-    # ` $user ` format used to provide.
+    # Show the device name where the preset shows $username — devices change
+    # more often than users.
+    /usr/bin/sed -i '' 's/^\$username\\$/$hostname\\/' "$cfg"
+    # Keep the [os] icon flush against the leading orange arrow; the [hostname]
+    # module that follows provides the spacing (its format has a leading space).
     /usr/bin/sed -i '' 's|^style = "bg:color_orange fg:color_fg0"$|&\
-format = '"'"'[$symbol ]($style)'"'"'|' "$cfg"
+format = '"'"'[$symbol]($style)'"'"'|' "$cfg"
+    # Replace the now-unused [username] block with an always-on [hostname] block,
+    # styled like the username block it replaces. Runs after the [os] padding sed
+    # above so its `style = ...` line isn't mistaken for the [os] one.
+    /usr/bin/sed -i '' '/^\[username\]$/,/format = .*\$user.*$/c\
+[hostname]\
+ssh_only = false\
+style = "bg:color_orange fg:color_fg0"\
+format = '"'"'[ $hostname ]($style)'"'"'
+' "$cfg"
   else
     skip "starship.toml already exists — leaving as-is"
   fi
