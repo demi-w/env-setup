@@ -45,10 +45,10 @@ case "$(uname -s)" in
 esac
 
 # Profile membership. Edit here to re-categorize an app.
-APPS_DEV=(brew nerd_font ripgrep ghostty fish starship git_base gh zed github_mcp pi chrome mac_settings)
+APPS_DEV=(brew nerd_font ripgrep ghostty fish starship git_base pinentry gh zed github_mcp pi chrome mac_settings)
 APPS_WORK=(slack datadog_mcp git_work)
 APPS_PERSONAL=(spotify git_personal)
-APPS_REMOTE=(brew ripgrep fish starship git_base gh pi git_personal)
+APPS_REMOTE=(brew ripgrep fish starship git_base pinentry gh pi git_personal)
 
 # All known apps. Order matters: dependencies first.
 ALL_APPS=(
@@ -59,6 +59,7 @@ ALL_APPS=(
   fish
   starship
   git_base
+  pinentry
   git_work
   git_personal
   gh
@@ -422,6 +423,36 @@ _configure_git_identity() {
   fi
 }
 
+install_pinentry() {
+  has_cmd brew || { err "brew required"; return 1; }
+
+  # macOS: pinentry-mac gives a native GUI passphrase prompt.
+  # Linux: brew's pinentry provides curses/tty prompts for headless use.
+  local pkg=pinentry
+  [ "$PLATFORM" = "macos" ] && pkg=pinentry-mac
+  brew_install "$pkg" || return 1
+
+  local bin="$(brew --prefix)/bin/$pkg"
+  [ -x "$bin" ] || { err "pinentry binary not found at $bin"; return 1; }
+
+  # Point gpg-agent at the brew-prefixed pinentry binary. Using `brew --prefix`
+  # avoids hard-coding /usr/local (Intel) vs /opt/homebrew (Apple Silicon) —
+  # a stale /usr/local path here makes every GPG-signed commit fail with
+  # "gpg: signing failed: No pinentry".
+  local agent_conf="$HOME/.gnupg/gpg-agent.conf"
+  mkdir -p "$HOME/.gnupg"
+  [ -f "$agent_conf" ] || touch "$agent_conf"
+  if grep -q '^pinentry-program' "$agent_conf"; then
+    sed -i.bak "s|^pinentry-program.*|pinentry-program $bin|" "$agent_conf" && rm -f "$agent_conf.bak"
+  else
+    append_if_missing "$agent_conf" "pinentry-program $bin"
+  fi
+
+  # Reload the agent so it picks up the new pinentry path immediately.
+  gpgconf --kill gpg-agent >/dev/null 2>&1 || true
+  ok "pinentry configured for gpg-agent ($bin)"
+}
+
 install_git_work() {
   _configure_git_identity "WORK" "demi.willison@datadoghq.com"
 }
@@ -748,11 +779,12 @@ pick_profile() {
 
 Pick a starting profile:
 
-  1) dev       brew, fonts, ghostty, fish, starship, git, gh, zed,
-               github MCP (read-only), pi, chrome, mac settings
+  1) dev       brew, fonts, ghostty, fish, starship, git, pinentry (GPG),
+               gh, zed, github MCP (read-only), pi, chrome, mac settings
   2) work      dev + Slack (Datadog), Datadog MCP, work git identity
   3) personal  dev + Spotify, personal git identity
-  4) remote    headless SSH box: brew, fish, starship, git, gh, pi, git identity
+  4) remote    headless SSH box: brew, fish, starship, git, pinentry, gh,
+               pi, git identity
   5) all       everything
   6) custom    start empty and pick individual apps
 
