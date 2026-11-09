@@ -170,19 +170,27 @@ run_step() {
 brew_install() {
   local pkg="$1" cask_flag="${2:-}"
   local brew_cmd=(env HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1 HOMEBREW_NO_ENV_HINTS=1 NONINTERACTIVE=1 brew)
+  # `yes` dies of SIGPIPE (exit 141) the moment brew closes stdin. Because this
+  # script runs with `set -o pipefail`, the pipeline's $? would pick up that 141
+  # and report the step as failed even when brew succeeded. So: capture each
+  # segment's real status and return only brew's (PIPESTATUS[1]).
+  local rc
   if [ "$cask_flag" = "--cask" ]; then
     if brew list --cask --versions "$pkg" >/dev/null 2>&1; then
       skip "$pkg (cask) already installed"
       return 0
     fi
     yes '' | "${brew_cmd[@]}" install --cask "$pkg"
+    rc=${PIPESTATUS[1]}
   else
     if brew list --versions "$pkg" >/dev/null 2>&1; then
       skip "$pkg already installed"
       return 0
     fi
     yes '' | "${brew_cmd[@]}" install "$pkg"
+    rc=${PIPESTATUS[1]}
   fi
+  [ "$rc" -eq 0 ] || return "$rc"
 }
 
 append_if_missing() {
