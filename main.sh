@@ -45,7 +45,7 @@ case "$(uname -s)" in
 esac
 
 # Profile membership. Edit here to re-categorize an app.
-APPS_DEV=(brew nerd_font ripgrep ghostty starship git_base pinentry gh zed github_mcp pi chrome mac_settings)
+APPS_DEV=(brew nerd_font ripgrep ghostty starship git_base pinentry gh zed github_mcp pi chrome obsidian mac_settings)
 APPS_WORK=(slack datadog_mcp git_work)
 APPS_PERSONAL=(spotify git_personal)
 APPS_REMOTE=(brew ripgrep starship git_base pinentry gh pi git_personal)
@@ -67,6 +67,7 @@ ALL_APPS=(
   github_mcp
   datadog_mcp
   chrome
+  obsidian
   slack
   spotify
   mac_settings
@@ -546,6 +547,18 @@ install_chrome() {
   log "Open Chrome and sign in to sync extensions/settings"
 }
 
+install_obsidian() {
+  # Obsidian ships as a macOS cask; Homebrew has no Linux build, so skip
+  # (with a hint) rather than report a failure on headless/Linux boxes.
+  if [ "$PLATFORM" != "macos" ]; then
+    skip "Obsidian has no Homebrew/Linux build — skipping (grab the AppImage/flatpak manually)"
+    return 0
+  fi
+  has_cmd brew || { err "brew required"; return 1; }
+  brew_install obsidian --cask || return 1
+  log "Open Obsidian once to enable sync and pick your vault"
+}
+
 install_slack() {
   has_cmd brew || { err "brew required"; return 1; }
   brew_install slack --cask || return 1
@@ -691,11 +704,12 @@ pick_profile() {
 Pick a starting profile:
 
   1) dev       brew, fonts, ghostty, starship, git, pinentry (GPG),
-               gh, zed, github MCP (read-only), pi, chrome, mac settings
+               gh, zed, github MCP (read-only), pi, chrome, obsidian,
+               mac settings
   2) work      dev + Slack (Datadog), Datadog MCP, work git identity
   3) personal  dev + Spotify, personal git identity
   4) remote    headless SSH box: brew, starship, git, pinentry, gh,
-               pi, git identity
+               pi, git identity (no GUI apps — no obsidian/chrome/zed)
   5) all       everything
   6) custom    start empty and pick individual apps
 
