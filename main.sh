@@ -45,10 +45,10 @@ case "$(uname -s)" in
 esac
 
 # Profile membership. Edit here to re-categorize an app.
-APPS_DEV=(brew nerd_font ripgrep ghostty fish starship git_base pinentry gh zed github_mcp pi chrome mac_settings)
+APPS_DEV=(brew nerd_font ripgrep ghostty starship git_base pinentry gh zed github_mcp pi chrome mac_settings)
 APPS_WORK=(slack datadog_mcp git_work)
 APPS_PERSONAL=(spotify git_personal)
-APPS_REMOTE=(brew ripgrep fish starship git_base pinentry gh pi git_personal)
+APPS_REMOTE=(brew ripgrep starship git_base pinentry gh pi git_personal)
 
 # All known apps. Order matters: dependencies first.
 ALL_APPS=(
@@ -56,7 +56,6 @@ ALL_APPS=(
   nerd_font
   ripgrep
   ghostty
-  fish
   starship
   git_base
   pinentry
@@ -100,23 +99,6 @@ brew_bin_path() {
     printf '%s\n' "$HOME/.linuxbrew/bin/brew"
   elif command -v brew >/dev/null 2>&1; then
     command -v brew
-  else
-    printf '%s\n' ""
-  fi
-}
-
-# Locate the fish binary across macOS + Linux install prefixes.
-fish_bin_path() {
-  if [ -x /opt/homebrew/bin/fish ]; then
-    printf '%s\n' /opt/homebrew/bin/fish
-  elif [ -x /usr/local/bin/fish ]; then
-    printf '%s\n' /usr/local/bin/fish
-  elif [ -x /home/linuxbrew/.linuxbrew/bin/fish ]; then
-    printf '%s\n' /home/linuxbrew/.linuxbrew/bin/fish
-  elif [ -x "$HOME/.linuxbrew/bin/fish" ]; then
-    printf '%s\n' "$HOME/.linuxbrew/bin/fish"
-  elif command -v fish >/dev/null 2>&1; then
-    command -v fish
   else
     printf '%s\n' ""
   fi
@@ -240,16 +222,12 @@ install_brew() {
     return 1
   fi
   eval "$("$brew_bin" shellenv)"
-  # macOS shells read .zprofile; Linux shells read .bashrc.
+  # macOS default shell (zsh) reads .zprofile; Linux default (bash) reads .bashrc.
   if [ "$PLATFORM" = "macos" ]; then
     append_if_missing "$HOME/.zprofile" "eval \"\$($brew_bin shellenv)\""
   else
     append_if_missing "$HOME/.bashrc" "eval \"\$($brew_bin shellenv)\""
   fi
-  # Fish doesn't read the above — wire shellenv into fish config too.
-  local fish_cfg="$HOME/.config/fish/config.fish"
-  mkdir -p "$(dirname "$fish_cfg")"
-  append_if_missing "$fish_cfg" "$brew_bin shellenv fish | source"
   ok "Homebrew installed"
 }
 
@@ -268,97 +246,25 @@ install_ghostty() {
   brew_install ghostty --cask
 }
 
-install_fish() {
-  has_cmd brew || { err "brew required"; return 1; }
-  brew_install fish || return 1
-
-  local fish_bin
-  fish_bin=$(fish_bin_path)
-  if [ -z "$fish_bin" ]; then
-    err "Could not locate fish binary after install"
-    return 1
-  fi
-
-  # macOS chsh refuses shells not listed in /etc/shells.
-  if ! grep -Fxq "$fish_bin" /etc/shells 2>/dev/null; then
-    log "Adding $fish_bin to /etc/shells (sudo required)…"
-    if ! echo "$fish_bin" | sudo tee -a /etc/shells >/dev/null; then
-      warn "Could not add fish to /etc/shells — skipping chsh"
-      return 0
-    fi
-  fi
-
-  if [ "$SHELL" = "$fish_bin" ]; then
-    skip "fish is already the default shell"
-  else
-    log "Changing default shell to fish (may prompt for password)…"
-    chsh -s "$fish_bin" || warn "chsh failed — run 'chsh -s $fish_bin' manually"
-  fi
-
-  # Suppress fish's interactive greeting banner.
-  local fish_cfg="$HOME/.config/fish/config.fish"
-  mkdir -p "$(dirname "$fish_cfg")"
-  append_if_missing "$fish_cfg" "set -U fish_greeting ''"
-
-  # Suppress macOS's "Last login:" banner that login(1) prints before fish starts.
-  touch "$HOME/.hushlogin"
-
-  ok "fish ready (open a new terminal to enter it)"
-}
-
 install_starship() {
   has_cmd brew || { err "brew required"; return 1; }
   brew_install starship || return 1
 
-  # macOS defaults to zsh; Linux defaults to bash. fish is handled below.
+  # macOS defaults to zsh; Linux defaults to bash.
   if [ "$PLATFORM" = "macos" ]; then
     append_if_missing "$HOME/.zshrc" 'eval "$(starship init zsh)"'
   else
     append_if_missing "$HOME/.bashrc" 'eval "$(starship init bash)"'
   fi
 
-  local fish_cfg="$HOME/.config/fish/config.fish"
-  if has_cmd fish; then
-    mkdir -p "$(dirname "$fish_cfg")"
-    append_if_missing "$fish_cfg" 'starship init fish | source'
-    # Re-add the pre-prompt newline that add_newline=false disabled, but skip
-    # it on the very first prompt so the session opens flush at the top.
-    if ! grep -q '_starship_first_prompt_done' "$fish_cfg" 2>/dev/null; then
-      # We must capture and restore $status manually: fish leaks the status
-      # of a failing `set -q` past the end of an if/else block, which would
-      # paint starship's prompt character red on every fresh session.
-      cat >> "$fish_cfg" <<'FISH'
-
-functions --copy fish_prompt _starship_inner_prompt
-function _starship_restore_status
-    return $argv[1]
-end
-function fish_prompt
-    set -l _starship_last_status $status
-    if set -q _starship_first_prompt_done
-        echo
-    else
-        set -g _starship_first_prompt_done 1
-    end
-    _starship_restore_status $_starship_last_status
-    _starship_inner_prompt
-end
-FISH
-    fi
-  fi
+  # Suppress the "Last login:" banner that login(1) prints before the shell starts.
+  touch "$HOME/.hushlogin"
 
   local cfg="$HOME/.config/starship.toml"
   mkdir -p "$(dirname "$cfg")"
   if [ ! -f "$cfg" ]; then
     log "Fetching gruvbox-rainbow preset…"
     starship preset gruvbox-rainbow -o "$cfg" || warn "Could not write starship preset"
-    # Disable starship's pre-prompt newline; fish wrapper below re-adds it for
-    # every prompt except the first, so the very first prompt has no blank gap.
-    # Insert at the TOP (root level): appending at the end would land inside the
-    # final [character] section and trigger an "Unknown key 'add_newline'" warning.
-    if ! grep -q '^add_newline' "$cfg" 2>/dev/null; then
-      printf 'add_newline = false\n\n' | cat - "$cfg" > "$cfg.tmp" && mv "$cfg.tmp" "$cfg"
-    fi
     # Show the device name where the preset shows $username — devices change
     # more often than users.
     # NOTE: no `-i` flag — BSD sed (macOS) and GNU sed (Linux) parse `-i ''`
@@ -533,16 +439,13 @@ install_zed() {
   fi
 
   # Minimal seed to silence the welcome flow until you wire up dotfiles.
-  local fish_program
-  fish_program=$(fish_bin_path)
-  [ -n "$fish_program" ] || fish_program="/opt/homebrew/bin/fish"
+  # No terminal shell override — Zed defaults to $SHELL (zsh on macOS, bash on Linux).
   cat > "$zed_cfg/settings.json" <<JSON
 {
   "telemetry": { "diagnostics": false, "metrics": false },
   "buffer_font_family": "FiraCode Nerd Font",
   "terminal": {
-    "font_family": "FiraCode Nerd Font",
-    "shell": { "program": "$fish_program" }
+    "font_family": "FiraCode Nerd Font"
   }
 }
 JSON
@@ -779,11 +682,11 @@ pick_profile() {
 
 Pick a starting profile:
 
-  1) dev       brew, fonts, ghostty, fish, starship, git, pinentry (GPG),
+  1) dev       brew, fonts, ghostty, starship, git, pinentry (GPG),
                gh, zed, github MCP (read-only), pi, chrome, mac settings
   2) work      dev + Slack (Datadog), Datadog MCP, work git identity
   3) personal  dev + Spotify, personal git identity
-  4) remote    headless SSH box: brew, fish, starship, git, pinentry, gh,
+  4) remote    headless SSH box: brew, starship, git, pinentry, gh,
                pi, git identity
   5) all       everything
   6) custom    start empty and pick individual apps
@@ -860,7 +763,7 @@ confirm_and_run() {
 
   log "Logging to $LOG_FILE"
 
-  # Cache sudo credentials once so later steps (Homebrew install, /etc/shells)
+  # Cache sudo credentials once so later steps (Homebrew install)
   # don't each re-prompt for a password.
   if command -v sudo >/dev/null 2>&1; then
     log "Validating sudo access (one-time password prompt)…"
