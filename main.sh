@@ -46,8 +46,8 @@ esac
 
 # Profile membership. Edit here to re-categorize an app.
 APPS_DEV=(brew nerd_font ripgrep ghostty starship git_base pinentry gh zed github_mcp pi chrome obsidian mac_settings)
-APPS_WORK=(slack datadog_mcp git_work)
-APPS_PERSONAL=(spotify git_personal)
+APPS_WORK=(slack datadog_mcp git_work secretive)
+APPS_PERSONAL=(spotify git_personal secretive)
 APPS_REMOTE=(brew ripgrep starship git_base pinentry gh pi git_personal)
 
 # All known apps. Order matters: dependencies first.
@@ -62,6 +62,7 @@ ALL_APPS=(
   git_work
   git_personal
   gh
+  secretive
   pi
   zed
   github_mcp
@@ -387,6 +388,63 @@ install_gh() {
   fi
 }
 
+install_secretive() {
+  # Touch ID commit signing: the key lives in the Secure Enclave via Secretive,
+  # and git signs with it over SSH (gpg.format=ssh).
+  # https://github.com/maxgoedjen/secretive
+  # https://git-scm.com/docs/git-config#Documentation/git-config.txt-usersigningkey
+  if [ "$PLATFORM" != "macos" ]; then
+    skip "Secretive needs a Mac Secure Enclave — skipping on $PLATFORM"
+    return 0
+  fi
+  has_cmd brew || { err "brew required"; return 1; }
+  has_cmd gh || { err "gh required"; return 1; }
+  brew_install secretive --cask || return 1
+
+  # .zshenv (not .zshrc) so non-interactive shells, e.g. coding agents, reach the agent.
+  local data="$HOME/Library/Containers/com.maxgoedjen.Secretive.SecretAgent/Data"
+  append_if_missing "$HOME/.zshenv" "export SSH_AUTH_SOCK=$data/socket.ssh"
+  export SSH_AUTH_SOCK="$data/socket.ssh"
+
+  # Secretive has no CLI for key creation, so the key is made in the app. Keys
+  # are read from the agent: macOS blocks reading Secretive's container files.
+  if ! ssh-add -L >/dev/null 2>&1; then
+    open -a Secretive
+    log "In Secretive: finish setup, then create a key with 'Require Authentication' on."
+    printf '\033[1;36m[?]\033[0m Press Enter once the key exists: '
+    read -r _
+  fi
+  local key
+  key=$(ssh-add -L 2>/dev/null | head -1 | cut -d' ' -f1,2)
+  [ -n "$key" ] || { err "No key in Secretive's agent ($SSH_AUTH_SOCK)"; return 1; }
+  log "Using Secretive key $key"
+
+  local email
+  email=$(git config --global user.email) || { err "Set git user.email first (git_work / git_personal)"; return 1; }
+  # Own file, included at the end of ~/.gitconfig so it wins over any GPG
+  # settings there; removing the include line reverts to them.
+  local cfg="$HOME/.config/git/secretive-signing" signers="$HOME/.config/git/allowed_signers"
+  mkdir -p "$HOME/.config/git"
+  git config --file "$cfg" gpg.format ssh
+  # key:: rather than the .pub path: macOS blocks other processes from reading
+  # Secretive's container, so ssh-keygen couldn't open the file.
+  git config --file "$cfg" user.signingkey "key::$key"
+  git config --file "$cfg" commit.gpgsign true
+  # Lets `git log --show-signature` verify locally.
+  git config --file "$cfg" gpg.ssh.allowedSignersFile "$signers"
+  append_if_missing "$signers" "$email $key"
+  git config --global --get-all include.path | grep -Fqx "$cfg" \
+    || git config --global --add include.path "$cfg"
+
+  # GitHub needs the key registered as a *signing* key to show commits as
+  # Verified. gh skips keys already on the account.
+  gh auth status -h github.com 2>&1 | grep -q ssh_signing_key \
+    || gh auth refresh -h github.com -s write:ssh_signing_key \
+    || { warn "Add '$key' at https://github.com/settings/ssh/new (type: Signing Key)"; return 0; }
+  echo "$key" | gh ssh-key add --type signing --title "$(scutil --get ComputerName) Secretive" || return 1
+  ok "Commits now sign with Secretive (Touch ID)"
+}
+
 install_pi() {
   if has_cmd pi; then
     ok "Pi (coding agent) CLI already installed"
@@ -706,8 +764,9 @@ Pick a starting profile:
   1) dev       brew, fonts, ghostty, starship, git, pinentry (GPG),
                gh, zed, github MCP (read-only), pi, chrome, obsidian,
                mac settings
-  2) work      dev + Slack (Datadog), Datadog MCP, work git identity
-  3) personal  dev + Spotify, personal git identity
+  2) work      dev + Slack (Datadog), Datadog MCP, work git identity,
+               Secretive (Touch ID commit signing)
+  3) personal  dev + Spotify, personal git identity, Secretive
   4) remote    headless SSH box: brew, starship, git, pinentry, gh,
                pi, git identity (no GUI apps — no obsidian/chrome/zed)
   5) all       everything
