@@ -432,6 +432,54 @@ install_secretive() {
   git config --file "$cfg" commit.gpgsign true
   # Lets `git log --show-signature` verify locally.
   git config --file "$cfg" gpg.ssh.allowedSignersFile "$signers"
+
+  # Agents sign in parallel, which Secretive 4.0.0 handles badly (see the
+  # wrapper's comments), so git signs one request at a time. sign-unlock and
+  # sign-lock wrap Secretive's "Leave unlocked": one Touch ID per 24 hours.
+  local bin="$HOME/.local/bin"
+  mkdir -p "$bin"
+  cat > "$bin/ssh-keygen-serial" <<'SH'
+#!/bin/sh
+# git gpg.ssh.program: lets one signature request at a time reach Secretive.
+# With 2+ requests waiting, Secretive 4.0.0 swaps its Touch ID prompt for a
+# "Pending requests" window, and it never drops a request whose client died.
+# ssh-keygen inherits the lock fd, so the lock lasts exactly as long as the request.
+# Once signing, it ignores the SIGTERM git forwards on `timeout`: a killed signer
+# would leave Secretive a ghost request, so it waits for Touch ID or Deny instead.
+[ "$1 $2" = "-Y sign" ] || exec /usr/bin/ssh-keygen "$@"
+mkdir -p "$HOME/.cache"
+exec /usr/bin/perl -MFcntl=:flock -e '
+  $^F = 255; open(my $l, ">>", shift) or die "signing lock: $!\n";
+  flock($l, LOCK_EX) or die "signing lock: $!\n";
+  getppid() == 1 and die "git exited while waiting for the signing lock\n";
+  $SIG{$_} = "IGNORE" for qw(TERM INT HUP);
+  exec @ARGV or die "exec: $!\n"' "$HOME/.cache/secretive-sign.lock" /usr/bin/ssh-keygen "$@"
+SH
+  cat > "$bin/sign-lock" <<'SH'
+#!/bin/sh
+# Relock Secretive: restarting SecretAgent ends any "Leave unlocked" window and
+# drops queued signature requests (their commits fail and need a retry).
+# Kill every copy first: one started with `open` runs beside the launchd job and
+# receives the "Leave unlocked" taps, which then unlock nothing.
+pkill -x SecretAgent
+launchctl kickstart -k "gui/$(id -u)/com.maxgoedjen.Secretive.SecretAgent" || exit
+for _ in 1 2 3 4 5 6 7 8 9 10; do ssh-add -L >/dev/null 2>&1 && exit 0; sleep 1; done
+echo "SecretAgent didn't come back on $SSH_AUTH_SOCK" >&2; exit 1
+SH
+  cat > "$bin/sign-unlock" <<'SH'
+#!/bin/sh
+# One Touch ID, then agents sign without prompts for 24 hours (Secretive's
+# built-in "Leave unlocked"). Starts from a clean agent; `sign-lock` ends it early.
+set -eu
+"${0%/*}/sign-lock"
+key=$(mktemp); trap 'rm -f "$key"' EXIT
+ssh-add -L | head -1 > "$key"
+echo "Approve Touch ID. Then, on Secretive's notification, choose Leave Unlocked > 24 hours and approve Touch ID again."
+echo "No notification? System Settings > Notifications > SecretAgent: allow, style Alerts. Then rerun."
+echo sign-unlock | /usr/bin/ssh-keygen -Y sign -n sign-unlock -f "$key" -U >/dev/null
+SH
+  chmod +x "$bin/ssh-keygen-serial" "$bin/sign-lock" "$bin/sign-unlock"
+  git config --file "$cfg" gpg.ssh.program "$bin/ssh-keygen-serial"
   append_if_missing "$signers" "$email $key"
   git config --global --get-all include.path | grep -Fqx "$cfg" \
     || git config --global --add include.path "$cfg"
@@ -442,6 +490,7 @@ install_secretive() {
     || gh auth refresh -h github.com -s write:ssh_signing_key \
     || { warn "Add '$key' at https://github.com/settings/ssh/new (type: Signing Key)"; return 0; }
   echo "$key" | gh ssh-key add --type signing --title "$(scutil --get ComputerName) Secretive" || return 1
+  warn "Manual: System Settings > Notifications > SecretAgent: allow, style Alerts (else 'Leave Unlocked' never shows)"
   ok "Commits now sign with Secretive (Touch ID)"
 }
 
