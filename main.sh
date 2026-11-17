@@ -45,7 +45,7 @@ case "$(uname -s)" in
 esac
 
 # Profile membership. Edit here to re-categorize an app.
-APPS_DEV=(brew nerd_font ripgrep ghostty starship git_base pinentry gh zed github_mcp pi chrome obsidian mac_settings)
+APPS_DEV=(brew nerd_font ripgrep ghostty starship zsh_extras git_base pinentry gh zed github_mcp pi chrome obsidian mac_settings)
 APPS_WORK=(slack datadog_mcp git_work secretive)
 APPS_PERSONAL=(spotify git_personal secretive)
 APPS_REMOTE=(brew ripgrep starship git_base pinentry gh pi git_personal)
@@ -57,6 +57,7 @@ ALL_APPS=(
   ripgrep
   ghostty
   starship
+  zsh_extras
   git_base
   pinentry
   git_work
@@ -293,10 +294,38 @@ ssh_only = false\
 style = "bg:color_orange fg:color_fg0"\
 format = '"'"'[ $hostname ]($style)'"'"'
 ' "$cfg" > "$cfg.tmp" && mv "$cfg.tmp" "$cfg"
+    # Blank line between prompts — the gruvbox-rainbow preset ships
+    # add_newline = false (compact); we prefer the airy layout (this also
+    # matches what the old fish wrapper emulated).
+    /usr/bin/sed 's/^add_newline = false$/add_newline = true/' "$cfg" > "$cfg.tmp" && mv "$cfg.tmp" "$cfg"
   else
     skip "starship.toml already exists — leaving as-is"
   fi
   ok "Starship ready (open a new shell to see it)"
+}
+
+# fish-like quality-of-life for zsh: ghost-text history autosuggestions plus
+# live command coloring. macOS only — Linux boxes default to bash (ble.sh is
+# the bash-side equivalent, but it isn't in Homebrew).
+install_zsh_extras() {
+  if [ "$PLATFORM" != "macos" ]; then
+    skip "zsh extras are macOS-only (Linux default shell is bash) — skipping"
+    return 0
+  fi
+  has_cmd brew || { err "brew required"; return 1; }
+  brew_install zsh-autosuggestions || return 1
+  brew_install zsh-syntax-highlighting || return 1
+
+  local prefix
+  prefix="$(brew --prefix)"
+
+  # Guarded lines: a missing/renamed plugin degrades to a plain shell rather
+  # than erroring on startup. zsh-syntax-highlighting must be sourced LAST in
+  # .zshrc (it wraps ZLE widgets), so it stays below everything else.
+  append_if_missing "$HOME/.zshrc" "[ -f $prefix/share/zsh-autosuggestions/zsh-autosuggestions.zsh ] && source $prefix/share/zsh-autosuggestions/zsh-autosuggestions.zsh"
+  append_if_missing "$HOME/.zshrc" "[ -f $prefix/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh ] && source $prefix/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh"
+
+  ok "zsh autosuggestions + syntax highlighting ready (restart your shell)"
 }
 
 install_git_base() {
@@ -810,9 +839,9 @@ pick_profile() {
 
 Pick a starting profile:
 
-  1) dev       brew, fonts, ghostty, starship, git, pinentry (GPG),
-               gh, zed, github MCP (read-only), pi, chrome, obsidian,
-               mac settings
+  1) dev       brew, fonts, ghostty, starship, zsh extras (fish-like
+               autosuggestions), git, pinentry (GPG), gh, zed,
+               github MCP (read-only), pi, chrome, obsidian, mac settings
   2) work      dev + Slack (Datadog), Datadog MCP, work git identity,
                Secretive (Touch ID commit signing)
   3) personal  dev + Spotify, personal git identity, Secretive
